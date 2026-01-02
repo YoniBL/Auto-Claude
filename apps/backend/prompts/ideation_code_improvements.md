@@ -196,7 +196,7 @@ For each opportunity, deeply analyze:
 Analyzing code improvement opportunity: [title]
 
 PATTERN DISCOVERY
-- Existing pattern found in: `$file_path`
+- Existing pattern found in: `"$file_path"`
 - Pattern summary: [how it works]
 - Pattern maturity: [how well established, how many uses]
 

@@ -27,6 +27,7 @@ import { ReviewStatusTree } from './ReviewStatusTree';
 import { PRHeader } from './PRHeader';
 import { ReviewFindings } from './ReviewFindings';
 import { PRLogs } from './PRLogs';
+import { PRFilesViewer } from './PRFilesViewer';
 
 import type { PRData, PRReviewResult, PRReviewProgress } from '../hooks/useGitHubPRs';
 import type { NewCommitsCheck, PRLogs as PRLogsType } from '../../../../preload/api/modules/github-api';
@@ -38,6 +39,7 @@ interface PRDetailProps {
   reviewProgress: PRReviewProgress | null;
   isReviewing: boolean;
   initialNewCommitsCheck?: NewCommitsCheck | null;
+  isActive?: boolean;
   onRunReview: () => void;
   onRunFollowupReview: () => void;
   onCheckNewCommits: () => Promise<NewCommitsCheck>;
@@ -67,6 +69,7 @@ export function PRDetail({
   reviewProgress,
   isReviewing,
   initialNewCommitsCheck,
+  isActive = false,
   onRunReview,
   onRunFollowupReview,
   onCheckNewCommits,
@@ -741,6 +744,15 @@ ${reviewResult.isFollowupReview ? `- Follow-up review: All previous blocking iss
             </ScrollArea>
           </CardContent>
         </Card>
+
+        {/* Changed Files with Diff Viewer */}
+        {pr.files && pr.files.length > 0 && (
+          <Card>
+            <CardContent className="pt-6">
+              <PRFilesViewer pr={pr} />
+            </CardContent>
+          </Card>
+        )}
       </div>
     </ScrollArea>
   );

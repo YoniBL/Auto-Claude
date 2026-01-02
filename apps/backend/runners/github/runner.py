@@ -71,6 +71,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 # Now import models and orchestrator directly (they use relative imports internally)
 from models import GitHubRunnerConfig
 from orchestrator import GitHubOrchestrator, ProgressCallback
+from gh_client import GHClient
 
 
 def print_progress(callback: ProgressCallback) -> None:
@@ -315,6 +316,153 @@ async def cmd_followup_review_pr(args) -> int:
         return 0
     else:
         print(f"\nFollow-up review failed: {result.error}")
+        return 1
+
+
+async def cmd_pr_create(args) -> int:
+    """Create a pull request."""
+    import sys
+    import json
+    import subprocess
+
+    # Import GH client exceptions
+    from gh_client import GHTimeoutError, GHCommandError
+    from rate_limiter import RateLimitExceeded
+
+    # Force unbuffered output so Electron sees it in real-time
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(line_buffering=True)
+
+    debug = os.environ.get("DEBUG")
+    if debug:
+        print(f"[DEBUG] Creating PR: {args.title}", flush=True, file=sys.stderr)
+        print(f"[DEBUG] Base: {args.base}, Head: {args.head}", flush=True, file=sys.stderr)
+        print(f"[DEBUG] Project directory: {args.project}", flush=True, file=sys.stderr)
+
+    try:
+        config = get_config(args)
+
+        if debug:
+            print(
+                f"[DEBUG] Config built: repo={config.repo}, model={config.model}",
+                flush=True,
+                file=sys.stderr,
+            )
+            print("[DEBUG] Creating GitHub client...", flush=True, file=sys.stderr)
+
+        gh_client = GHClient(
+            project_dir=args.project,
+            repo=config.repo,
+        )
+
+        # Parse draft argument (comes as string from IPC)
+        draft = args.draft.lower() == 'true' if isinstance(args.draft, str) else bool(args.draft)
+
+        if debug:
+            print(f"[DEBUG] Draft mode: {draft}", flush=True, file=sys.stderr)
+
+        print(f"Creating pull request: {args.title}", file=sys.stderr)
+        print(f"Base: {args.base}, Head: {args.head}", file=sys.stderr)
+        print("Checking for merge conflicts...", file=sys.stderr)
+
+        result = await gh_client.pr_create(
+            base=args.base,
+            head=args.head,
+            title=args.title,
+            body=args.body,
+            draft=draft,
+        )
+
+        if debug:
+            print(f"[DEBUG] PR created successfully: {result}", flush=True, file=sys.stderr)
+
+        # Success - return structured JSON with success flag
+        output = {
+            'success': True,
+            'data': result
+        }
+        print(json.dumps(output))
+
+        print(f"\nPull request created: #{result['number']}", file=sys.stderr)
+        print(f"URL: {result.get('html_url', result['url'])}", file=sys.stderr)
+
+        return 0
+
+    except FileNotFoundError as e:
+        # GitHub CLI not installed
+        error_output = {
+            'success': False,
+            'error': 'GitHub CLI (gh) not found. Please install: https://cli.github.com',
+            'errorType': 'MISSING_GH_CLI'
+        }
+        print(json.dumps(error_output))
+        if debug:
+            print(f"[DEBUG] FileNotFoundError: {e}", file=sys.stderr)
+        return 1
+
+    except GHTimeoutError as e:
+        # Command timed out
+        error_output = {
+            'success': False,
+            'error': f'GitHub CLI operation timed out: {str(e)}',
+            'errorType': 'GH_TIMEOUT_ERROR'
+        }
+        print(json.dumps(error_output))
+        if debug:
+            print(f"[DEBUG] GHTimeoutError: {e}", file=sys.stderr)
+        return 1
+
+    except RateLimitExceeded as e:
+        # Rate limit exceeded
+        error_output = {
+            'success': False,
+            'error': f'GitHub API rate limit exceeded: {str(e)}',
+            'errorType': 'RATE_LIMIT_EXCEEDED'
+        }
+        print(json.dumps(error_output))
+        if debug:
+            print(f"[DEBUG] RateLimitExceeded: {e}", file=sys.stderr)
+        return 1
+
+    except GHCommandError as e:
+        # GitHub CLI command failed
+        error_msg = str(e)
+        error_output = {
+            'success': False,
+            'error': f'GitHub CLI error: {error_msg}',
+            'errorType': 'GH_CLI_ERROR'
+        }
+        print(json.dumps(error_output))
+        if debug:
+            print(f"[DEBUG] GHCommandError: {e}", file=sys.stderr)
+        return 1
+
+    except json.JSONDecodeError as e:
+        # Invalid JSON response from gh CLI
+        error_output = {
+            'success': False,
+            'error': 'Failed to parse GitHub CLI response',
+            'errorType': 'JSON_PARSE_ERROR'
+        }
+        print(json.dumps(error_output))
+        if debug:
+            print(f"[DEBUG] JSONDecodeError: {e}", file=sys.stderr)
+        return 1
+
+    except Exception as e:
+        # Unexpected error
+        error_output = {
+            'success': False,
+            'error': str(e),
+            'errorType': 'UNEXPECTED_ERROR'
+        }
+        print(json.dumps(error_output))
+        if debug:
+            import traceback
+            print(f"[DEBUG] Unexpected error:", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
         return 1
 
 
@@ -696,6 +844,19 @@ def main():
     )
     followup_parser.add_argument("pr_number", type=int, help="PR number to review")
 
+    # pr-create command
+    pr_create_parser = subparsers.add_parser("pr-create", help="Create a pull request")
+    pr_create_parser.add_argument("base", type=str, help="Base branch (e.g., 'main')")
+    pr_create_parser.add_argument("head", type=str, help="Head branch (e.g., 'feature/my-feature')")
+    pr_create_parser.add_argument("title", type=str, help="PR title")
+    pr_create_parser.add_argument("body", type=str, help="PR description")
+    pr_create_parser.add_argument(
+        "draft",
+        type=str,
+        default="false",
+        help="Create as draft PR (true/false)",
+    )
+
     # triage command
     triage_parser = subparsers.add_parser("triage", help="Triage issues")
     triage_parser.add_argument(
@@ -755,8 +916,8 @@ def main():
     analyze_parser.add_argument(
         "--max-issues",
         type=int,
-        default=200,
-        help="Maximum number of issues to analyze (default: 200)",
+        default=50,
+        help="Maximum number of issues to analyze (default: 50, max 200)",
     )
     analyze_parser.add_argument(
         "--json",
@@ -785,6 +946,7 @@ def main():
     commands = {
         "review-pr": cmd_review_pr,
         "followup-review-pr": cmd_followup_review_pr,
+        "pr-create": cmd_pr_create,
         "triage": cmd_triage,
         "auto-fix": cmd_auto_fix,
         "check-auto-fix-labels": cmd_check_labels,

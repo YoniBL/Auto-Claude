@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { app } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import { EventEmitter } from 'events';
 import { AgentState } from './agent-state';
 import { AgentEvents } from './agent-events';
@@ -11,6 +11,65 @@ import { projectStore } from '../project-store';
 import { getClaudeProfileManager } from '../claude-profile-manager';
 import { parsePythonCommand, validatePythonPath } from '../python-detector';
 import { pythonEnvManager, getConfiguredPythonPath } from '../python-env-manager';
+import { logBackendOutput } from '../ipc-handlers/logs-handlers';
+
+// Essential environment variables needed for Python processes
+// On Windows, passing the full process.env can cause ENAMETOOLONG errors
+// because the environment block has a 32KB limit
+const ESSENTIAL_ENV_VARS = new Set([
+  // System essentials
+  'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP',
+  'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME', 'USER',
+  'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)',
+  // Python specific
+  'PYTHONPATH', 'PYTHONHOME', 'PYTHONUNBUFFERED', 'PYTHONIOENCODING',
+  'PYTHONDONTWRITEBYTECODE', 'PYTHONNOUSERSITE', 'PYTHONUTF8',
+  'VIRTUAL_ENV', 'CONDA_PREFIX', 'CONDA_DEFAULT_ENV',
+  // Claude/OAuth
+  'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY',
+  // Node.js
+  'NODE_ENV', 'NODE_OPTIONS',
+  // Git
+  'GIT_EXEC_PATH', 'GIT_DIR',
+  // Locale
+  'LANG', 'LC_ALL', 'LC_CTYPE', 'LANGUAGE',
+  // Terminal
+  'TERM', 'COLORTERM', 'FORCE_COLOR', 'NO_COLOR',
+  // OpenSSL/SSL
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
+  // OS detection
+  'OS', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS'
+]);
+
+/**
+ * Filter environment variables to only include essential ones.
+ * This prevents ENAMETOOLONG errors on Windows where the environment
+ * block has a 32KB limit.
+ */
+function filterEssentialEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const filtered: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+
+    const upperKey = key.toUpperCase();
+    // Include if it's in our essential set
+    if (ESSENTIAL_ENV_VARS.has(upperKey)) {
+      filtered[key] = value;
+      continue;
+    }
+    // Also include any vars starting with PYTHON, CLAUDE, GRAPHITI, or AUTO_CLAUDE
+    if (upperKey.startsWith('PYTHON') ||
+        upperKey.startsWith('CLAUDE') ||
+        upperKey.startsWith('GRAPHITI') ||
+        upperKey.startsWith('AUTO_CLAUDE') ||
+        upperKey.startsWith('ANTHROPIC')) {
+      filtered[key] = value;
+    }
+  }
+
+  return filtered;
+}
 
 /**
  * Process spawning and lifecycle management
@@ -23,11 +82,21 @@ export class AgentProcessManager {
   // Use null to indicate not yet configured - getPythonPath() will use fallback
   private _pythonPath: string | null = null;
   private autoBuildSourcePath: string = '';
+  
+  // Static reference to getMainWindow for log streaming
+  private static getMainWindow: (() => BrowserWindow | null) | null = null;
 
   constructor(state: AgentState, events: AgentEvents, emitter: EventEmitter) {
     this.state = state;
     this.events = events;
     this.emitter = emitter;
+  }
+  
+  /**
+   * Set the main window getter for log streaming
+   */
+  static setMainWindowGetter(getMainWindow: () => BrowserWindow | null): void {
+    AgentProcessManager.getMainWindow = getMainWindow;
   }
 
   configure(pythonPath?: string, autoBuildSourcePath?: string): void {
@@ -50,8 +119,10 @@ export class AgentProcessManager {
     extraEnv: Record<string, string>
   ): NodeJS.ProcessEnv {
     const profileEnv = getProfileEnv();
+    // Filter process.env to essential vars to prevent ENAMETOOLONG on Windows
+    const filteredEnv = filterEssentialEnv(process.env);
     return {
-      ...process.env,
+      ...filteredEnv,
       ...extraEnv,
       ...profileEnv,
       PYTHONUNBUFFERED: '1',
@@ -437,7 +508,7 @@ export class AgentProcessManager {
       }
     };
 
-    const processBufferedOutput = (buffer: string, newData: string): string => {
+    const processBufferedOutput = (buffer: string, newData: string, isStderr: boolean = false): string => {
       if (isDebug && newData.includes('__EXEC_PHASE__')) {
         console.log(`[PhaseDebug:${taskId}] Raw chunk with marker (${newData.length} bytes): "${newData.substring(0, 300)}"`);
         console.log(`[PhaseDebug:${taskId}] Current buffer before append (${buffer.length} bytes): "${buffer.substring(0, 100)}"`);
@@ -455,6 +526,15 @@ export class AgentProcessManager {
         if (line.trim()) {
           this.emitter.emit('log', taskId, line + '\n');
           processLog(line);
+          
+          // Stream backend logs to LogViewer
+          if (AgentProcessManager.getMainWindow) {
+            const level = isStderr || line.toLowerCase().includes('error') ? 'error' :
+                         line.toLowerCase().includes('warn') ? 'warn' :
+                         line.toLowerCase().includes('debug') ? 'debug' : 'info';
+            logBackendOutput(line, level, AgentProcessManager.getMainWindow);
+          }
+          
           if (isDebug) {
             console.log(`[Agent:${taskId}] ${line}`);
           }
@@ -465,11 +545,11 @@ export class AgentProcessManager {
     };
 
     childProcess.stdout?.on('data', (data: Buffer) => {
-      stdoutBuffer = processBufferedOutput(stdoutBuffer, data.toString('utf8'));
+      stdoutBuffer = processBufferedOutput(stdoutBuffer, data.toString('utf8'), false);
     });
 
     childProcess.stderr?.on('data', (data: Buffer) => {
-      stderrBuffer = processBufferedOutput(stderrBuffer, data.toString('utf8'));
+      stderrBuffer = processBufferedOutput(stderrBuffer, data.toString('utf8'), true);
     });
 
     childProcess.on('exit', (code: number | null) => {

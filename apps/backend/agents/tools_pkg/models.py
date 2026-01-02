@@ -111,6 +111,34 @@ ELECTRON_TOOLS = [
 ]
 
 # =============================================================================
+# Thinking/Reasoning MCP Tools (Custom MCP servers)
+# =============================================================================
+# Advanced reasoning tools for complex decision-making and analysis.
+# These are custom MCP servers configured via CUSTOM_MCP_SERVERS in .env
+# Agents must be explicitly granted permission to use these tools.
+
+# Sequential Thinking - Step-by-step reasoning with thought chains
+# Useful for: Planning, breaking down complex problems, methodical analysis
+SEQUENTIAL_THINKING_TOOLS = [
+    "mcp__sequential-thinking__sequentialthinking",
+]
+
+# Code Reasoning - Technical and architectural decision-making
+# Useful for: Code design decisions, debugging, architecture planning
+CODE_REASONING_TOOLS = [
+    "mcp__code-reasoning__code-reasoning",
+]
+
+# MCP Reasoner - Strategic decision-making with MCTS/Beam search
+# Useful for: Evaluating multiple approaches, strategic planning, option comparison
+REASONER_TOOLS = [
+    "mcp__reasoner__mcp-reasoner",
+]
+
+# Combined thinking tools (for agents that need all reasoning capabilities)
+ALL_THINKING_TOOLS = SEQUENTIAL_THINKING_TOOLS + CODE_REASONING_TOOLS + REASONER_TOOLS
+
+# =============================================================================
 # Configuration
 # =============================================================================
 
@@ -137,20 +165,29 @@ AGENT_CONFIGS = {
     # SPEC CREATION PHASES (Minimal tools, fast startup)
     # ═══════════════════════════════════════════════════════════════════════
     "spec_gatherer": {
-        "tools": BASE_READ_TOOLS + WEB_TOOLS,
-        "mcp_servers": [],  # No MCP needed - just reads project
+        "tools": BASE_READ_TOOLS
+        + WEB_TOOLS
+        + SEQUENTIAL_THINKING_TOOLS
+        + CODE_REASONING_TOOLS,  # Analysis + technical understanding
+        "mcp_servers": ["sequential-thinking", "code-reasoning"],
         "auto_claude_tools": [],
         "thinking_default": "medium",
     },
     "spec_researcher": {
-        "tools": BASE_READ_TOOLS + WEB_TOOLS,
-        "mcp_servers": ["context7"],  # Needs docs lookup
+        "tools": BASE_READ_TOOLS
+        + WEB_TOOLS
+        + SEQUENTIAL_THINKING_TOOLS
+        + CODE_REASONING_TOOLS,  # Research analysis + technical evaluation
+        "mcp_servers": ["context7", "sequential-thinking", "code-reasoning"],
         "auto_claude_tools": [],
         "thinking_default": "medium",
     },
     "spec_writer": {
-        "tools": BASE_READ_TOOLS + BASE_WRITE_TOOLS,
-        "mcp_servers": [],  # Just writes spec.md
+        "tools": BASE_READ_TOOLS
+        + BASE_WRITE_TOOLS
+        + SEQUENTIAL_THINKING_TOOLS
+        + CODE_REASONING_TOOLS,  # Structured thinking + technical specification
+        "mcp_servers": ["sequential-thinking", "code-reasoning"],
         "auto_claude_tools": [],
         "thinking_default": "high",
     },
@@ -189,8 +226,18 @@ AGENT_CONFIGS = {
     # Note: "linear" is conditional on project setting "update_linear_with_tasks"
     # ═══════════════════════════════════════════════════════════════════════
     "planner": {
-        "tools": BASE_READ_TOOLS + BASE_WRITE_TOOLS + WEB_TOOLS,
-        "mcp_servers": ["context7", "graphiti", "auto-claude"],
+        "tools": BASE_READ_TOOLS
+        + BASE_WRITE_TOOLS
+        + WEB_TOOLS
+        + ALL_THINKING_TOOLS,  # Strategic + technical + methodical reasoning
+        "mcp_servers": [
+            "context7",
+            "graphiti",
+            "auto-claude",
+            "sequential-thinking",
+            "code-reasoning",
+            "reasoner",
+        ],
         "mcp_servers_optional": ["linear"],  # Only if project setting enabled
         "auto_claude_tools": [
             TOOL_GET_BUILD_PROGRESS,
@@ -200,8 +247,18 @@ AGENT_CONFIGS = {
         "thinking_default": "high",
     },
     "coder": {
-        "tools": BASE_READ_TOOLS + BASE_WRITE_TOOLS + WEB_TOOLS,
-        "mcp_servers": ["context7", "graphiti", "auto-claude"],
+        "tools": BASE_READ_TOOLS
+        + BASE_WRITE_TOOLS
+        + WEB_TOOLS
+        + SEQUENTIAL_THINKING_TOOLS
+        + CODE_REASONING_TOOLS,  # Methodical analysis + technical decisions
+        "mcp_servers": [
+            "context7",
+            "graphiti",
+            "auto-claude",
+            "sequential-thinking",
+            "code-reasoning",
+        ],
         "mcp_servers_optional": ["linear"],
         "auto_claude_tools": [
             TOOL_UPDATE_SUBTASK_STATUS,
@@ -216,9 +273,23 @@ AGENT_CONFIGS = {
     # QA PHASES (Read + test + browser + Graphiti memory)
     # ═══════════════════════════════════════════════════════════════════════
     "qa_reviewer": {
-        # Read-only + Bash (for running tests) - reviewer should NOT edit code
-        "tools": BASE_READ_TOOLS + ["Bash"] + WEB_TOOLS,
-        "mcp_servers": ["context7", "graphiti", "auto-claude", "browser"],
+        # Read + Write/Edit (for QA reports and plan updates) + Bash (for tests)
+        # Note: Reviewer writes to spec directory only (qa_report.md, implementation_plan.json)
+        # Plus thinking tools for systematic analysis
+        "tools": BASE_READ_TOOLS
+        + BASE_WRITE_TOOLS
+        + ["Bash"]
+        + WEB_TOOLS
+        + SEQUENTIAL_THINKING_TOOLS
+        + CODE_REASONING_TOOLS,  # Systematic analysis + technical validation
+        "mcp_servers": [
+            "context7",
+            "graphiti",
+            "auto-claude",
+            "browser",
+            "sequential-thinking",
+            "code-reasoning",
+        ],
         "mcp_servers_optional": ["linear"],  # For updating issue status
         "auto_claude_tools": [
             TOOL_GET_BUILD_PROGRESS,
@@ -228,8 +299,19 @@ AGENT_CONFIGS = {
         "thinking_default": "high",
     },
     "qa_fixer": {
-        "tools": BASE_READ_TOOLS + BASE_WRITE_TOOLS + WEB_TOOLS,
-        "mcp_servers": ["context7", "graphiti", "auto-claude", "browser"],
+        "tools": BASE_READ_TOOLS
+        + BASE_WRITE_TOOLS
+        + WEB_TOOLS
+        + SEQUENTIAL_THINKING_TOOLS
+        + CODE_REASONING_TOOLS,  # Debugging analysis + technical decisions
+        "mcp_servers": [
+            "context7",
+            "graphiti",
+            "auto-claude",
+            "browser",
+            "sequential-thinking",
+            "code-reasoning",
+        ],
         "mcp_servers_optional": ["linear"],
         "auto_claude_tools": [
             TOOL_UPDATE_SUBTASK_STATUS,

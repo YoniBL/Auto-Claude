@@ -88,6 +88,7 @@ export interface PRReviewFinding {
 
 /**
  * Complete PR review result
+ * Includes both camelCase (preferred) and snake_case (backward compatibility) field names
  */
 export interface PRReviewResult {
   prNumber: number;
@@ -99,7 +100,7 @@ export interface PRReviewResult {
   reviewId?: number;
   reviewedAt: string;
   error?: string;
-  // Follow-up review fields
+  // Follow-up review fields (camelCase preferred)
   reviewedCommitSha?: string;
   isFollowupReview?: boolean;
   previousReviewId?: number;
@@ -110,6 +111,9 @@ export interface PRReviewResult {
   hasPostedFindings?: boolean;
   postedFindingIds?: string[];
   postedAt?: string;
+  // Backward compatibility with snake_case field names from Python backend
+  reviewed_commit_sha?: string;
+  posted_at?: string;
 }
 
 /**
@@ -405,17 +409,21 @@ function savePRLogs(project: Project, logs: PRLogs): void {
 
 /**
  * Add a log entry to PR logs
+ * Returns true if the phase status changed (for triggering immediate save)
  */
-function addLogEntry(logs: PRLogs, entry: PRLogEntry): void {
+function addLogEntry(logs: PRLogs, entry: PRLogEntry): boolean {
   const phase = logs.phases[entry.phase];
+  let statusChanged = false;
 
-  // Update phase status if needed
+  // Start the phase if it was pending
   if (phase.status === 'pending') {
     phase.status = 'active';
     phase.started_at = entry.timestamp;
+    statusChanged = true;
   }
 
   phase.entries.push(entry);
+  return statusChanged;
 }
 
 /**
@@ -442,14 +450,20 @@ class PRLogCollector {
 
     const phase = getPhaseFromSource(parsed.source);
 
-    // Track phase transitions - mark previous phases as complete
+    // Track phase transitions - mark previous phases as complete (only if they were active)
     if (phase !== this.currentPhase) {
       // When moving to a new phase, mark the previous phase as complete
+      // Only mark complete if the phase was actually active (received log entries)
+      // This prevents marking phases as "completed" if they were skipped
       if (this.currentPhase === 'context' && (phase === 'analysis' || phase === 'synthesis')) {
-        this.markPhaseComplete('context', true);
+        if (this.logs.phases.context.status === 'active') {
+          this.markPhaseComplete('context', true);
+        }
       }
       if (this.currentPhase === 'analysis' && phase === 'synthesis') {
-        this.markPhaseComplete('analysis', true);
+        if (this.logs.phases.analysis.status === 'active') {
+          this.markPhaseComplete('analysis', true);
+        }
       }
       this.currentPhase = phase;
     }
@@ -462,11 +476,12 @@ class PRLogCollector {
       source: parsed.source,
     };
 
-    addLogEntry(this.logs, entry);
+    const phaseStatusChanged = addLogEntry(this.logs, entry);
     this.entryCount++;
 
-    // Save periodically for real-time streaming (every N entries)
-    if (this.entryCount % this.saveInterval === 0) {
+    // Save immediately if phase status changed (so frontend sees phase activation)
+    // OR save periodically for real-time streaming (every N entries)
+    if (phaseStatusChanged || this.entryCount % this.saveInterval === 0) {
       this.save();
     }
   }
@@ -484,20 +499,15 @@ class PRLogCollector {
   }
 
   finalize(success: boolean): void {
-    // Mark all phases as completed based on success status
-    // For phases with entries: mark based on success
-    // For phases without entries (pending): mark as completed if previous phases completed
-    let previousCompleted = true;
+    // Mark active phases as completed based on success status
+    // Pending phases with no entries should stay pending (they never ran)
     for (const phase of ['context', 'analysis', 'synthesis'] as PRLogPhase[]) {
       const phaseLog = this.logs.phases[phase];
       if (phaseLog.status === 'active') {
         this.markPhaseComplete(phase, success);
-        previousCompleted = success;
-      } else if (phaseLog.status === 'pending' && previousCompleted && success) {
-        // If review succeeded, mark pending phases as completed (they just had no logs)
-        phaseLog.status = 'completed';
-        phaseLog.completed_at = new Date().toISOString();
       }
+      // Note: Pending phases stay pending - they never received any log entries
+      // This is correct behavior for follow-up reviews where some phases may be skipped
     }
     this.save();
   }
@@ -789,6 +799,7 @@ export function registerPRHandlers(
             additions: number;
             deletions: number;
             status: string;
+            patch?: string;
           }>;
 
           return {
@@ -808,6 +819,7 @@ export function registerPRHandlers(
               additions: f.additions,
               deletions: f.deletions,
               status: f.status,
+              patch: f.patch,
             })),
             createdAt: pr.created_at,
             updatedAt: pr.updated_at,
@@ -1322,8 +1334,8 @@ export function registerPRHandlers(
           return { hasNewCommits: false, newCommitCount: 0 };
         }
 
-        // Convert snake_case to camelCase for the field
-        const reviewedCommitSha = review.reviewedCommitSha || (review as any).reviewed_commit_sha;
+        // Convert snake_case to camelCase for the field (backward compatibility)
+        const reviewedCommitSha = review.reviewedCommitSha || review.reviewed_commit_sha;
         if (!reviewedCommitSha) {
           debugLog('No reviewedCommitSha in review', { prNumber });
           return { hasNewCommits: false, newCommitCount: 0 };
@@ -1361,7 +1373,7 @@ export function registerPRHandlers(
           )) as { ahead_by?: number; total_commits?: number; commits?: Array<{ commit: { committer: { date: string } } }> };
 
           // Check if findings have been posted and if new commits are after the posting date
-          const postedAt = review.postedAt || (review as any).posted_at;
+          const postedAt = review.postedAt || review.posted_at;
           let hasCommitsAfterPosting = true; // Default to true if we can't determine
 
           if (postedAt && comparison.commits && comparison.commits.length > 0) {
@@ -1541,6 +1553,144 @@ export function registerPRHandlers(
           projectId
         );
         sendError({ prNumber, error: error instanceof Error ? error.message : 'Failed to run follow-up review' });
+      }
+    }
+  );
+
+  // Create PR
+  ipcMain.on(
+    IPC_CHANNELS.GITHUB_PR_CREATE,
+    async (
+      _,
+      projectId: string,
+      specDir: string,
+      base: string,
+      head: string,
+      title: string,
+      body: string,
+      draft: boolean = false
+    ) => {
+      debugLog('handleGitHubPRCreate called', { projectId, specDir, base, head, title, draft });
+
+      const mainWindow = getMainWindow();
+      if (!mainWindow) {
+        debugLog('No main window available');
+        return;
+      }
+
+      try {
+        await withProjectOrNull(projectId, async (project) => {
+          const { sendProgress, sendComplete, sendError } = createIPCCommunicators<
+            { progress: number; message: string },
+            { number: number; url: string; title: string; state: string }
+          >(
+            mainWindow,
+            {
+              progress: IPC_CHANNELS.GITHUB_PR_CREATE_PROGRESS,
+              error: IPC_CHANNELS.GITHUB_PR_CREATE_ERROR,
+              complete: IPC_CHANNELS.GITHUB_PR_CREATE_COMPLETE,
+            },
+            projectId
+          );
+
+          const config = getGitHubConfig(project);
+          if (!config) {
+            debugLog('No GitHub config found for project');
+            sendError({ error: 'GitHub configuration not found' });
+            return;
+          }
+
+          // Comprehensive validation of GitHub module
+          const validation = await validateGitHubModule(project);
+          if (!validation.valid) {
+            debugLog('GitHub module validation failed');
+            sendError({ error: validation.error || 'GitHub module validation failed' });
+            return;
+          }
+
+          const backendPath = validation.backendPath!;
+
+          sendProgress({ progress: 10, message: 'Checking for merge conflicts...' });
+
+          // Build arguments for pr_create runner
+          const args = buildRunnerArgs(
+            getRunnerPath(backendPath),
+            project.path,
+            'pr-create',
+            [base, head, title, body, draft.toString()],
+            {}
+          );
+
+          debugLog('Spawning PR create process', { args });
+
+          sendProgress({ progress: 30, message: 'Creating pull request...' });
+
+          // Timeout configuration (30 seconds)
+          const PR_CREATION_TIMEOUT_MS = 30000;
+
+          const { promise } = runPythonSubprocess<{ number: number; url: string; title: string; state: string }>({
+            pythonPath: getPythonPath(backendPath),
+            args,
+            cwd: backendPath,
+            env: {},
+            timeout: PR_CREATION_TIMEOUT_MS,
+            onProgress: (percent, message) => {
+              debugLog('Progress update', { percent, message });
+              sendProgress({
+                progress: Math.max(30, Math.min(90, percent)),
+                message,
+              });
+            },
+            onStdout: (line) => debugLog('STDOUT:', line),
+            onStderr: (line) => debugLog('STDERR:', line),
+            onComplete: () => {
+              debugLog('PR create subprocess completed');
+            },
+            onTimeout: () => {
+              debugLog('PR create subprocess timed out');
+              const timeoutMessage = `PR creation timed out after ${PR_CREATION_TIMEOUT_MS / 1000} seconds.
+
+Possible causes:
+• Network connectivity issues
+• GitHub API rate limiting
+• Large repository sync required
+
+Please check your network connection and try again. If the issue persists, you can create the PR manually using:
+  gh pr create --base ${base} --head ${head} --title "${title}"`;
+              sendError({ error: timeoutMessage });
+            },
+          });
+
+          // Wait for completion
+          const result = await promise;
+
+          if (result.success && result.data) {
+            debugLog('PR created successfully', { prData: result.data });
+            sendProgress({
+              progress: 100,
+              message: 'Pull request created successfully!',
+            });
+            sendComplete(result.data);
+          } else {
+            debugLog('PR create failed', { error: result.error });
+            sendError({ error: result.error || 'Failed to create pull request' });
+          }
+        });
+      } catch (error) {
+        debugLog('PR create handler error', { error: error instanceof Error ? error.message : error });
+        const { sendError } = createIPCCommunicators<
+          { progress: number; message: string },
+          { number: number; url: string; title: string; state: string }
+        >(
+          mainWindow,
+          {
+            progress: IPC_CHANNELS.GITHUB_PR_CREATE_PROGRESS,
+            error: IPC_CHANNELS.GITHUB_PR_CREATE_ERROR,
+            complete: IPC_CHANNELS.GITHUB_PR_CREATE_COMPLETE,
+          },
+          projectId
+        );
+        sendError({ error: error instanceof Error ? error.message : 'Failed to create pull request' });
       }
     }
   );

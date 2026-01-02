@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.timeout import query_with_timeout, receive_with_timeout
+
 try:
     from ..models import GitHubRunnerConfig, TriageCategory, TriageResult
     from .prompt_manager import PromptManager
@@ -19,6 +21,9 @@ except (ImportError, ValueError, SystemError):
     from services.response_parsers import ResponseParser
 
 
+
+# FIX #79: Timeout protection for LLM API calls
+from core.timeout import query_with_timeout, receive_with_timeout
 class TriageEngine:
     """Handles issue triage workflow."""
 
@@ -80,10 +85,10 @@ class TriageEngine:
 
         try:
             async with client:
-                await client.query(full_prompt)
+                await query_with_timeout(client, full_prompt)
 
                 response_text = ""
-                async for msg in client.receive_response():
+                async for msg in receive_with_timeout(client):
                     msg_type = type(msg).__name__
                     if msg_type == "AssistantMessage" and hasattr(msg, "content"):
                         for block in msg.content:

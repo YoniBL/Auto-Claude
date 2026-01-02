@@ -9,7 +9,19 @@ memory updates, recovery tracking, and Linear integration.
 import logging
 from pathlib import Path
 
+# FIX #491: Retry logic for transient failures
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
+
 from claude_agent_sdk import ClaudeSDKClient
+
+# FIX #79: Timeout protection for LLM API calls
+from core.timeout import query_with_timeout, receive_with_timeout
+
 from debug import debug, debug_detailed, debug_error, debug_section, debug_success
 from insight_extractor import extract_session_insights
 from linear_updater import (
@@ -21,6 +33,7 @@ from progress import (
     is_build_complete,
 )
 from recovery import RecoveryManager
+from security.tool_input_validator import get_safe_tool_input
 from task_logger import (
     LogEntryType,
     LogPhase,
@@ -310,6 +323,12 @@ async def post_session_processing(
         return False
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+    reraise=True,
+)
 async def run_agent_session(
     client: ClaudeSDKClient,
     message: str,
@@ -332,6 +351,9 @@ async def run_agent_session(
         - "continue" if agent should continue working
         - "complete" if all subtasks complete
         - "error" if an error occurred
+
+    FIX #491: Retries up to 3 times with exponential backoff on
+    transient network/connection errors (ConnectionError, TimeoutError, OSError).
     """
     debug_section("session", f"Agent Session - {phase.value}")
     debug(
@@ -351,15 +373,15 @@ async def run_agent_session(
     tool_count = 0
 
     try:
-        # Send the query
+        # Send the query (FIX #79: with timeout protection)
         debug("session", "Sending query to Claude SDK...")
-        await client.query(message)
+        await query_with_timeout(client, message)
         debug_success("session", "Query sent successfully")
 
-        # Collect response text and show tool use
+        # Collect response text and show tool use (FIX #79: with timeout protection)
         response_text = ""
         debug("session", "Starting to receive response stream...")
-        async for msg in client.receive_response():
+        async for msg in receive_with_timeout(client):
             msg_type = type(msg).__name__
             message_count += 1
             debug_detailed(
@@ -386,41 +408,43 @@ async def run_agent_session(
                             )
                     elif block_type == "ToolUseBlock" and hasattr(block, "name"):
                         tool_name = block.name
-                        tool_input = None
+                        tool_input_display = None
                         tool_count += 1
 
+                        # Safely extract tool input (handles None, non-dict, etc.)
+                        inp = get_safe_tool_input(block)
+
                         # Extract meaningful tool input for display
-                        if hasattr(block, "input") and block.input:
-                            inp = block.input
-                            if isinstance(inp, dict):
-                                if "pattern" in inp:
-                                    tool_input = f"pattern: {inp['pattern']}"
-                                elif "file_path" in inp:
-                                    fp = inp["file_path"]
-                                    if len(fp) > 50:
-                                        fp = "..." + fp[-47:]
-                                    tool_input = fp
-                                elif "command" in inp:
-                                    cmd = inp["command"]
-                                    if len(cmd) > 50:
-                                        cmd = cmd[:47] + "..."
-                                    tool_input = cmd
-                                elif "path" in inp:
-                                    tool_input = inp["path"]
+                        if inp:
+                            if "pattern" in inp:
+                                tool_input_display = f"pattern: {inp['pattern']}"
+                            elif "file_path" in inp:
+                                fp = inp["file_path"]
+                                if len(fp) > 50:
+                                    fp = "..." + fp[-47:]
+                                tool_input_display = fp
+                            elif "command" in inp:
+                                cmd = inp["command"]
+                                if len(cmd) > 50:
+                                    cmd = cmd[:47] + "..."
+                                tool_input_display = cmd
+                            elif "path" in inp:
+                                tool_input_display = inp["path"]
 
                         debug(
                             "session",
                             f"Tool call #{tool_count}: {tool_name}",
-                            tool_input=tool_input,
-                            full_input=str(block.input)[:500]
-                            if hasattr(block, "input")
-                            else None,
+                            tool_input=tool_input_display,
+                            full_input=str(inp)[:500] if inp else None,
                         )
 
                         # Log tool start (handles printing too)
                         if task_logger:
                             task_logger.tool_start(
-                                tool_name, tool_input, phase, print_to_console=True
+                                tool_name,
+                                tool_input_display,
+                                phase,
+                                print_to_console=True,
                             )
                         else:
                             print(f"\n[Tool: {tool_name}]", flush=True)

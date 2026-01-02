@@ -188,7 +188,8 @@ For your selected subtask, read the relevant files.
 
 ```bash
 # From your subtask's files_to_modify
-cat [path/to/file]
+file_path="./path/to/file"  # Replace with actual path from files_to_modify
+cat "$file_path"
 ```
 
 Understand:
@@ -200,7 +201,8 @@ Understand:
 
 ```bash
 # From your subtask's patterns_from
-cat [path/to/pattern/file]
+file_path="./path/to/pattern/file"  # Replace with actual path from patterns_from
+cat "$file_path"
 ```
 
 Understand:
@@ -212,7 +214,11 @@ Understand:
 ### 5.3: Read Service Context (if available)
 
 ```bash
-cat [service-path]/SERVICE_CONTEXT.md 2>/dev/null || echo "No service context"
+# Set the service path variable
+service_path="./path/to/service"  # Replace with actual service path
+
+# Read service context
+cat "$service_path/SERVICE_CONTEXT.md" 2>/dev/null || echo "No service context"
 ```
 
 ### 5.4: Look Up External Library Documentation (Use Context7)

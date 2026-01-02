@@ -87,8 +87,11 @@ For each issue in the fix request:
 ### 3.1: Read the Problem Area
 
 ```bash
+# Set the file path variable
+file_path="./path/to/file"  # Replace with actual file path from QA_FIX_REQUEST.md
+
 # Read the file with the issue
-cat [file-path]
+cat "$file_path"
 ```
 
 ### 3.2: Understand What's Wrong

@@ -179,13 +179,14 @@ For each promising opportunity found:
 
 ```bash
 # Examine the pattern file closely
-cat [file_path] | head -100
+file_path="./path/to/pattern/file"  # Set the file path variable
+cat "$file_path" | head -100
 
 # See how it's used
 grep -r "[function_name]\|[component_name]" --include="*.ts" --include="*.tsx" . | head -10
 
 # Check for related implementations
-ls -la $(dirname [file_path])
+ls -la $(dirname "$file_path")
 ```
 
 For each opportunity, deeply analyze:
@@ -195,7 +196,7 @@ For each opportunity, deeply analyze:
 Analyzing code improvement opportunity: [title]
 
 PATTERN DISCOVERY
-- Existing pattern found in: [file_path]
+- Existing pattern found in: `$file_path`
 - Pattern summary: [how it works]
 - Pattern maturity: [how well established, how many uses]
 

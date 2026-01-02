@@ -242,7 +242,11 @@ EOF
 Verify the file was created:
 
 ```bash
-cat /path/from/context/roadmap_discovery.json
+# Set the file path variable
+file_path="./roadmap_discovery.json"  # Replace with actual path from context
+
+# Verify the file
+cat "$file_path"
 ```
 
 ---

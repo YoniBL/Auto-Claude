@@ -133,7 +133,11 @@ Parse the validation errors provided. For each error:
 ## PHASE 2: READ THE FILE
 
 ```bash
-cat [failed_file]
+# Set the file path variable
+file_path="./path/to/failed/file"  # Replace with actual file path
+
+# Read the file
+cat "$file_path"
 ```
 
 Understand:

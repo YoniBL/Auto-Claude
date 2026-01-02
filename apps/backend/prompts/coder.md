@@ -215,10 +215,10 @@ Understand:
 
 ```bash
 # Set the service path variable
-service_path="./path/to/service"  # Replace with actual service path
+SERVICE_PATH="./path/to/service"  # Replace with actual service path
 
 # Read service context
-cat "$service_path/SERVICE_CONTEXT.md" 2>/dev/null || echo "No service context"
+cat "$SERVICE_PATH/SERVICE_CONTEXT.md" 2>/dev/null || echo "No service context"
 ```
 
 ### 5.4: Look Up External Library Documentation (Use Context7)

@@ -186,11 +186,11 @@ To verify compliance, search for:
 
 ```bash
 # Find old patterns
-grep -r "spec_dir\|file_path\|FILE_PATH" apps/backend/prompts/
+# Find incorrect patterns
+grep -r -E -w "spec_dir|FILE_PATH|filePath" apps/backend/prompts/
 
-# Should find only:
-# - SPEC_DIR (correct)
-# - file_path (correct)
-# - spec_dir in Python code (correct)
+# After running, verify that:
+# - Any 'spec_dir' matches are only inside Python code blocks.
+# - 'FILE_PATH' and 'filePath' do not appear.
 ```
 

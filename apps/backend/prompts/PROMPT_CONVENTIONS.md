@@ -74,9 +74,9 @@ cat '$SPEC_DIR/implementation_plan.json'  # ❌ Incorrect (single quotes prevent
 
 ### File Paths in Examples
 
-When showing example paths (not actual variables), use backticks for markdown formatting:
+When showing example paths (not actual variables), use backticks for Markdown formatting:
 
-```markdown
+```Markdown
 Read the file at `./path/to/file.md`
 Check `spec.md` for requirements
 ```
